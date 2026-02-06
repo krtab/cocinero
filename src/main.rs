@@ -20,8 +20,6 @@ use thiserror::Error;
 use toml::Value;
 use toml::map::Map;
 
-
-
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Receipe {
@@ -56,7 +54,7 @@ enum Step {
         #[serde(default)]
         template: bool,
         script: Utf8PathBuf,
-    }
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -110,8 +108,7 @@ struct CliArgs {
 }
 
 fn new_buf_file(p: impl AsRef<Path>) -> std::io::Result<BufWriter<File>> {
-    File::create(p)
-        .map(BufWriter::new)
+    File::create(p).map(BufWriter::new)
 }
 
 fn copy_create_dir(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> anyhow::Result<()> {
@@ -195,7 +192,7 @@ fn main() -> anyhow::Result<()> {
     }
     create_dir_all(&target)?;
     let mut script = create_script(&target.join("cook.sh"))?;
-    writeln!(script,"echo 'starting to cook'")?;
+    writeln!(script, "echo 'starting to cook'")?;
 
     let mut template_env = LazyCell::new(TemplateEnv::new);
 
@@ -259,16 +256,22 @@ fn main() -> anyhow::Result<()> {
                         writeln!(&mut receipe_script)?;
                     }
                 }
-                Step::Run { template: false, script } => {
+                Step::Run {
+                    template: false,
+                    script,
+                } => {
                     let src_path = orig_receipe_dir_path.join(script);
                     let target_path = target_receipe_dir_path.join(script);
                     copy_create_dir(src_path, target_path)?;
                     writeln!(&mut receipe_script, "./{script}")?;
-                },
-                Step::Run { template: true, script } => {
+                }
+                Step::Run {
+                    template: true,
+                    script,
+                } => {
                     let src_path = orig_receipe_dir_path.join(script);
                     let file_template = template_env.register_template_file(src_path)?;
-                    for (i,vars) in receipe.template_vars.iter().enumerate() {
+                    for (i, vars) in receipe.template_vars.iter().enumerate() {
                         let dest_name = script.with_added_extension(format!("{i}"));
                         let target_path = target_receipe_dir_path.join(&dest_name);
                         let mut f = new_buf_file(target_path)?;
@@ -276,7 +279,7 @@ fn main() -> anyhow::Result<()> {
                         chmod_plus_x(f.get_mut())?;
                         writeln!(&mut receipe_script, "./{dest_name}")?;
                     }
-                },
+                }
             }
         }
     }
@@ -301,7 +304,7 @@ fn create_script(p: &Utf8Path) -> anyhow::Result<BufWriter<File>> {
         "set -e",
         "",
     ] {
-        writeln!(buf_file,"{l}")?
+        writeln!(buf_file, "{l}")?
     }
     let file = buf_file.get_mut();
     chmod_plus_x(file)?;
