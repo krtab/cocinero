@@ -22,6 +22,26 @@ use toml::map::Map;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct CocineroConf {
+    package_command: String,
+    package_max_args: Option<usize>,
+    #[serde(default)]
+    systemctl_sudo: bool,
+    #[serde(default)]
+    systemctl_user: bool,
+}
+
+
+impl CocineroConf {
+    fn load(p: &Utf8Path) -> anyhow::Result<Self> {
+        let content = std::fs::read_to_string(p)?;
+        let x = toml::from_str(&content)?;
+        Ok(x)
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Receipe {
     #[serde(default)]
     packages: Vec<String>,
@@ -179,6 +199,7 @@ impl TemplateEnv {
 fn main() -> anyhow::Result<()> {
     env_logger::init();
     let cli_args = CliArgs::parse();
+    let cocinero_conf = CocineroConf::load(&cli_args.receipes.join("cocinero.toml")).context("loading cocinero.toml")?;
     let all_receipes = load_all_receipes(&cli_args)?;
 
     let target = cli_args
@@ -197,8 +218,8 @@ fn main() -> anyhow::Result<()> {
     let mut template_env = LazyCell::new(TemplateEnv::new);
 
     let packages = all_receipes.values().flat_map(|u| &u.packages);
-    for package_chunk in &packages.chunks(64) {
-        write!(script, "apt-get install")?;
+    for package_chunk in &packages.chunks(cocinero_conf.package_max_args.unwrap_or(1)) {
+        write!(script, "{}",cocinero_conf.package_command)?;
         for pkg in package_chunk {
             write!(script, " {pkg}")?;
         }
@@ -284,10 +305,14 @@ fn main() -> anyhow::Result<()> {
         }
     }
     writeln!(script,)?;
+    let systemctl_cmd = format!("{} systemctl {}",
+        if cocinero_conf.systemctl_sudo {"sudo"} else {""},
+        if cocinero_conf.systemctl_user {"--user"} else {""}
+    );
     for receipe in all_receipes.values() {
         for unit in &receipe.systemd {
-            writeln!(script, "systemctl enable --now {unit}")?;
-            writeln!(script, "systemctl reload-or-restart {unit}")?;
+            writeln!(script, "{systemctl_cmd} enable --now {unit}")?;
+            writeln!(script, "{systemctl_cmd} reload-or-restart {unit}")?;
         }
     }
     Ok(())
