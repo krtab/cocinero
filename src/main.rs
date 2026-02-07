@@ -7,7 +7,7 @@ use std::io::{ErrorKind as IoErrorKind, Write as _};
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
-use anyhow::Context;
+use anyhow::{Context, anyhow};
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::Parser;
 use handlebars::Handlebars;
@@ -15,6 +15,8 @@ use handlebars::RenderError;
 use handlebars::TemplateError;
 use itertools::Itertools;
 use log::trace;
+use petgraph::algo::toposort;
+use petgraph::prelude::DiGraphMap;
 use serde::Deserialize;
 use thiserror::Error;
 use toml::Value;
@@ -31,7 +33,6 @@ struct CocineroConf {
     systemctl_user: bool,
 }
 
-
 impl CocineroConf {
     fn load(p: &Utf8Path) -> anyhow::Result<Self> {
         let content = std::fs::read_to_string(p)?;
@@ -43,6 +44,8 @@ impl CocineroConf {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Receipe {
+    #[serde(default)]
+    depends_on: Vec<Utf8PathBuf>,
     #[serde(default)]
     packages: Vec<String>,
     #[serde(default)]
@@ -199,7 +202,8 @@ impl TemplateEnv {
 fn main() -> anyhow::Result<()> {
     env_logger::init();
     let cli_args = CliArgs::parse();
-    let cocinero_conf = CocineroConf::load(&cli_args.receipes.join("cocinero.toml")).context("loading cocinero.toml")?;
+    let cocinero_conf = CocineroConf::load(&cli_args.receipes.join("cocinero.toml"))
+        .context("loading cocinero.toml")?;
     let all_receipes = load_all_receipes(&cli_args)?;
 
     let target = cli_args
@@ -219,14 +223,33 @@ fn main() -> anyhow::Result<()> {
 
     let packages = all_receipes.values().flat_map(|u| &u.packages);
     for package_chunk in &packages.chunks(cocinero_conf.package_max_args.unwrap_or(1)) {
-        write!(script, "{}",cocinero_conf.package_command)?;
+        write!(script, "{}", cocinero_conf.package_command)?;
         for pkg in package_chunk {
             write!(script, " {pkg}")?;
         }
         writeln!(script,)?;
     }
     writeln!(script)?;
-    for (receipe_dir_name, receipe) in &all_receipes {
+
+    let mut receipes_graph: DiGraphMap<&Utf8Path, ()> = petgraph::graphmap::DiGraphMap::new();
+
+    for (name, receipe) in &all_receipes {
+        receipes_graph.add_node(name);
+        for dep in &receipe.depends_on {
+            receipes_graph.add_edge(dep, name, ());
+        }
+    }
+    let ordered_receipe_names = toposort(&receipes_graph, None).map_err(|e| {
+        anyhow!(
+            "There is a dependency cycle (in which {} takes part)",
+            e.node_id()
+        )
+    })?;
+
+    for (receipe_dir_name, receipe) in ordered_receipe_names
+        .into_iter()
+        .map(|name| (name, &all_receipes[name]))
+    {
         if receipe.steps.is_empty() {
             continue;
         }
@@ -305,10 +328,20 @@ fn main() -> anyhow::Result<()> {
         }
     }
     writeln!(script,)?;
-    let systemctl_cmd = format!("{} systemctl {}",
-        if cocinero_conf.systemctl_sudo {"sudo"} else {""},
-        if cocinero_conf.systemctl_user {"--user"} else {""}
+    let systemctl_cmd = format!(
+        "{} systemctl {}",
+        if cocinero_conf.systemctl_sudo {
+            "sudo"
+        } else {
+            ""
+        },
+        if cocinero_conf.systemctl_user {
+            "--user"
+        } else {
+            ""
+        }
     );
+    writeln!(script, "{systemctl_cmd} daemon-reload")?;
     for receipe in all_receipes.values() {
         for unit in &receipe.systemd {
             writeln!(script, "{systemctl_cmd} enable --now {unit}")?;
