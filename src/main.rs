@@ -221,7 +221,13 @@ fn main() -> anyhow::Result<()> {
 
     let mut template_env = LazyCell::new(TemplateEnv::new);
 
-    let packages = all_receipes.values().flat_map(|u| &u.packages);
+    let has_units = all_receipes
+        .values()
+        .flat_map(|r| &r.systemd)
+        .next()
+        .is_some();
+
+    let packages = all_receipes.values().flat_map(|u| &u.packages).map(|s| &**s).chain(has_units.then_some("systemd"));
     for package_chunk in &packages.chunks(cocinero_conf.package_max_args.unwrap_or(1)) {
         write!(script, "{}", cocinero_conf.package_command)?;
         for pkg in package_chunk {
@@ -258,7 +264,10 @@ fn main() -> anyhow::Result<()> {
         std::fs::create_dir_all(&target_receipe_dir_path)?;
         let receipe_script_path = target_receipe_dir_path.join("_cook.sh");
         let mut receipe_script = create_script(&receipe_script_path)?;
-        writeln!(script, r#"(set +x; echo 'running receipe "{receipe_dir_name}"')"#)?;
+        writeln!(
+            script,
+            r#"(set +x; echo 'running receipe "{receipe_dir_name}"')"#
+        )?;
         writeln!(script, "(cd {receipe_dir_name} && ./_cook.sh)")?;
         for step in &receipe.steps {
             match step {
@@ -329,9 +338,9 @@ fn main() -> anyhow::Result<()> {
     }
     writeln!(script,)?;
     let systemctl_cmd = format!(
-        "{} systemctl {}",
+        "{}systemctl {}",
         if cocinero_conf.systemctl_sudo {
-            "sudo"
+            "sudo "
         } else {
             ""
         },
@@ -341,7 +350,14 @@ fn main() -> anyhow::Result<()> {
             ""
         }
     );
-    writeln!(script, "{systemctl_cmd} daemon-reload")?;
+    if all_receipes
+        .values()
+        .flat_map(|r| &r.systemd)
+        .next()
+        .is_some()
+    {
+        writeln!(script, "{systemctl_cmd} daemon-reload")?;
+    }
     for receipe in all_receipes.values() {
         for unit in &receipe.systemd {
             writeln!(script, "{systemctl_cmd} enable --now {unit}")?;
